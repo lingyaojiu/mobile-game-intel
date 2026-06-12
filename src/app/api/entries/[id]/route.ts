@@ -8,13 +8,17 @@ export async function PUT(
   const { id } = await params;
   try {
     const body = await request.json();
+    const data: Record<string, unknown> = {};
+    if (body.title !== undefined) data.title = body.title;
+    if (body.content !== undefined) data.content = body.content;
+    if (body.summary !== undefined) data.summary = body.summary;
+    if (body.source !== undefined) data.source = body.source;
+    if (body.imageUrl !== undefined) data.imageUrl = body.imageUrl;
+    if (body.link !== undefined) data.link = body.link;
+
     const entry = await prisma.entry.update({
       where: { id: parseInt(id) },
-      data: {
-        ...(body.title !== undefined && { title: body.title }),
-        ...(body.content !== undefined && { content: body.content }),
-        ...(body.source !== undefined && { source: body.source }),
-      },
+      data,
     });
     return NextResponse.json(entry);
   } catch {

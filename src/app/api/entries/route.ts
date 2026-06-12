@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { date, category, title, content, source } = body;
+    const { date, category, title, content, summary, source, imageUrl, link } = body;
 
     if (!date || !category || !title || !content) {
       return NextResponse.json(
@@ -31,7 +31,16 @@ export async function POST(request: NextRequest) {
     }
 
     const entry = await prisma.entry.create({
-      data: { date, category, title, content, source: source || null },
+      data: {
+        date,
+        category,
+        title,
+        content,
+        summary: summary || null,
+        source: source || null,
+        imageUrl: imageUrl || null,
+        link: link || null,
+      },
     });
 
     return NextResponse.json(entry, { status: 201 });

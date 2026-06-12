@@ -1,3 +1,3 @@
 {
-  "buildCommand": "npx prisma generate && next build"
+  "buildCommand": "cp prisma/schema.postgres.prisma prisma/schema.prisma && npx prisma generate && next build"
 }
