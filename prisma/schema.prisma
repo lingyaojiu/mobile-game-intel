@@ -7,22 +7,146 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Entry {
-  id          Int      @id @default(autoincrement())
-  date        String   // YYYY-MM-DD (采集日期)
-  category    String
-  title       String
-  content     String
-  summary     String?  // 摘要
-  source      String?
-  imageUrl    String?  // 缩略图
-  link        String?  // 原文链接
-  contentHtml String?  // 抓取的文章正文HTML
-  publishedAt String?  // 文章原始发布时间 YYYY-MM-DD HH:mm
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+model Game {
+  id             Int       @id @default(autoincrement())
+  name           String
+  nameEn         String?
+  developer      String?
+  publisher      String?
+  launchDate     String?
+  markets        String?
+  theme          String?
+  genre          String?
+  artStyle       String?
+  coreGameplay   String?
+  combatSystem   String?
+  buildingSystem String?
+  progression    String?
+  allianceSystem String?
+  seasonSystem   String?
+  monetization   String?
+  appStoreUrl    String?
+  googlePlayUrl  String?
+  officialUrl    String?
+  tags           String?
+  imageUrl       String?
+  description    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  articles       Article[]
+
+  @@index([name])
+  @@index([genre])
+  @@index([theme])
+}
+
+model Article {
+  id              Int       @id @default(autoincrement())
+  gameId          Int?
+  game            Game?     @relation(fields: [gameId], references: [id])
+  column          String    @default("news")
+  title           String
+  summary         String?
+  content         String?
+  background      String?
+  keyPoints       String?
+  analysis        String?
+  insights        String?
+  sourceName      String?
+  sourceUrl       String?
+  sourceType      String?   // official, media, data, community
+  isPrimary       Boolean   @default(false)
+  publishedAt     String?
+  imageUrl        String?
+  gameName        String?
+  companyName     String?
+  region          String?
+  category        String?
+  credibility     Int?      // 1-5
+  relevanceScore  Int?      // 0-100
+  status          String    @default("candidate") // candidate, pending_review, published, rejected, archived
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([column])
+  @@index([gameId])
+  @@index([publishedAt])
+  @@index([createdAt])
+}
+
+model Company {
+  id          Int       @id @default(autoincrement())
+  name        String
+  nameEn      String?
+  country     String?
+  website     String?
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([name])
+}
+
+model Source {
+  id          Int       @id @default(autoincrement())
+  name        String
+  type        String    // media, data, official, community, wechat
+  url         String?
+  rssUrl      String?
+  language    String    @default("zh")
+  enabled     Boolean   @default(true)
+  lastCrawled DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([enabled])
+}
+
+model Tag {
+  id        Int       @id @default(autoincrement())
+  name      String
+  type      String    @default("game") // game, theme, mechanic, region
+  createdAt DateTime  @default(now())
+
+  @@unique([name, type])
+}
+
+model DailyReport {
+  id           Int      @id @default(autoincrement())
+  date         String   @unique // YYYY-MM-DD
+  title        String
+  content      String?
+  articleCount Int      @default(0)
+  status       String   @default("draft") // draft, published
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([date])
-  @@index([category])
-  @@index([publishedAt])
+}
+
+model CrawlLog {
+  id         Int      @id @default(autoincrement())
+  date       String   // YYYY-MM-DD
+  source     String
+  status     String   // success, partial, failed
+  totalItems Int      @default(0)
+  newItems   Int      @default(0)
+  errors     String?
+  duration   Int?     // seconds
+  createdAt  DateTime @default(now())
+
+  @@index([date])
+  @@index([source])
+}
+
+model ReviewQueue {
+  id        Int      @id @default(autoincrement())
+  articleId Int
+  action    String?  // approve, reject, edit
+  reviewer  String?
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@index([articleId])
 }

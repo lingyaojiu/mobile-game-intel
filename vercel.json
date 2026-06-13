@@ -6,5 +6,5 @@
       "schedule": "0 1 * * *"
     }
   ],
-  "buildCommand": "cp prisma/schema.postgres.prisma prisma/schema.prisma && npx prisma generate && npx prisma db push --accept-data-loss && next build"
+  "buildCommand": "cp prisma/schema.postgres.prisma prisma/schema.prisma && npx prisma generate && next build"
 }

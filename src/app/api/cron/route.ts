@@ -1,170 +1,155 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { execSync } from "child_process";
+import path from "path";
 
-export const maxDuration = 120;
-export const dynamic = "force-dynamic";
-
-/**
- * Cron trigger - called by Vercel Cron Jobs at 9:00 AM daily
- * Or called manually via GET /api/cron
- */
+// GET /api/cron - 定时采集任务（Vercel Cron Jobs调用）
+// 每天早上9点（UTC 1:00）执行
 export async function GET() {
+  const startTime = Date.now();
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+  const results: { source: string; status: string; count: number }[] = [];
+
   try {
-    // Verify it's a cron request (Vercel adds CRON secret)
-    // For security, we just run the collection
+    // 1. 执行采集脚本
+    const collectorPath = path.join(process.cwd(), "src", "lib", "collector.mjs");
+    let scriptSuccess = false;
+    let scriptOutput = "";
 
-    const today = new Date().toISOString().split("T")[0];
-
-    // Fetch from sources
-    const sources = [
-      fetchPage("https://www.gamersky.com/news/"),
-      fetchPage("https://www.taptap.cn/top/new"),
-      fetchPage("https://www.gamelook.com.cn/"),
-      ...["手游", "游戏", "SLG", "新游", "游戏公司"].map(
-        (kw) => fetchPage(`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(kw)}`)
-      ),
-    ];
-
-    const htmlResults = await Promise.allSettled(sources);
-    const allHtml: string[] = [];
-    for (const r of htmlResults) {
-      if (r.status === "fulfilled" && r.value) allHtml.push(r.value);
+    try {
+      scriptOutput = execSync(`node "${collectorPath}"`, {
+        timeout: 120000, // 2分钟超时
+        encoding: "utf-8",
+        env: { ...process.env, NODE_PATH: path.join(process.cwd(), "node_modules") },
+      }).toString();
+      scriptSuccess = true;
+    } catch (scriptError: any) {
+      scriptOutput = scriptError.stdout || scriptError.message || "脚本执行失败";
     }
 
-    // Extract articles
-    const allEntries: Array<{
-      title: string; content: string; summary: string; source: string; imageUrl: string | null; link: string;
-    }> = [];
+    // 解析脚本输出
+    const totalMatch = scriptOutput.match(/总计[：:]\s*(\d+)/);
+    const newMatch = scriptOutput.match(/新增[：:]\s*(\d+)/);
+    const totalItems = totalMatch ? parseInt(totalMatch[1]) : 0;
+    const newItems = newMatch ? parseInt(newMatch[1]) : 0;
 
-    const sourceNames = ["游民星空", "TapTap", "GameLook", "微信公众号", "微信公众号", "微信公众号", "微信公众号", "微信公众号"];
-
-    for (let i = 0; i < allHtml.length; i++) {
-      const name = sourceNames[i] || "未知";
-      const baseUrl = i < 3
-        ? ["https://www.gamersky.com", "https://www.taptap.cn", "https://www.gamelook.com.cn"][i]
-        : "https://weixin.sogou.com";
-      const articles = extractArticlesSimple(allHtml[i], baseUrl, name);
-      allEntries.push(...articles);
-    }
-
-    // Deduplicate
-    const seen = new Set<string>();
-    const unique = allEntries.filter((item) => {
-      const key = item.title.toLowerCase().trim();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
+    // 2. 记录采集日志
+    await prisma.crawlLog.create({
+      data: {
+        date: todayStr,
+        source: "cron_auto",
+        status: scriptSuccess ? "success" : "partial",
+        totalItems,
+        newItems,
+        errors: scriptSuccess ? null : scriptOutput.substring(0, 500),
+        duration: Math.floor((Date.now() - startTime) / 1000),
+      },
     });
 
-    // Save to DB
-    let saved = 0;
-    for (const entry of unique) {
-      const existing = await prisma.entry.findFirst({
-        where: { date: today, title: entry.title },
+    // 3. 尝试生成每日简报
+    try {
+      const todayArticles = await prisma.article.findMany({
+        where: {
+          publishedAt: { gte: todayStr },
+          status: "published",
+        },
+        orderBy: { relevanceScore: "desc" },
+        take: 20,
       });
-      if (!existing) {
-        await prisma.entry.create({
-          data: {
-            date: today,
-            category: classifyArticleSimple(entry.title, entry.content),
-            title: entry.title,
-            content: entry.content,
-            summary: entry.summary,
-            source: entry.source,
-            imageUrl: entry.imageUrl,
-            link: entry.link,
-          },
+
+      if (todayArticles.length > 0) {
+        // 检查是否已有简报
+        const existing = await prisma.dailyReport.findUnique({
+          where: { date: todayStr },
         });
-        saved++;
+
+        if (!existing) {
+          const grouped: Record<string, typeof todayArticles> = {};
+          for (const article of todayArticles) {
+            if (!grouped[article.column]) grouped[article.column] = [];
+            grouped[article.column].push(article);
+          }
+
+          const lines: string[] = [];
+          lines.push(`# SLG行业情报简报 - ${todayStr}`);
+          lines.push("");
+          lines.push(`今日共收录 ${todayArticles.length} 篇相关文章，涵盖 ${Object.keys(grouped).length} 个栏目。`);
+          lines.push("");
+
+          for (const [column, articles] of Object.entries(grouped)) {
+            lines.push(`## ${getColumnLabel(column)}`);
+            lines.push("");
+            articles.slice(0, 5).forEach((article, i) => {
+              lines.push(`${i + 1}. **${article.title}**`);
+              if (article.summary) lines.push(`   ${article.summary}`);
+              if (article.sourceName) lines.push(`   来源：${article.sourceName}`);
+              lines.push("");
+            });
+          }
+
+          lines.push("---");
+          lines.push("> 本简报由 SLG手游情报系统自动生成，仅供行业研究参考。");
+
+          await prisma.dailyReport.create({
+            data: {
+              date: todayStr,
+              title: `SLG行业情报简报 ${todayStr}`,
+              content: lines.join("\n"),
+              articleCount: todayArticles.length,
+              status: "published",
+            },
+          });
+        }
       }
+    } catch (reportError) {
+      console.error("生成简报失败:", reportError);
     }
 
     return NextResponse.json({
       success: true,
-      total: unique.length,
-      saved,
-      message: `定时采集完成: ${unique.length} 条, 新增 ${saved} 条`,
+      duration: Math.floor((Date.now() - startTime) / 1000),
+      totalItems,
+      newItems,
+      results,
     });
   } catch (error) {
-    console.error("Cron error:", error);
+    console.error("Cron job error:", error);
+
+    // 记录失败日志
+    await prisma.crawlLog.create({
+      data: {
+        date: todayStr,
+        source: "cron_auto",
+        status: "failed",
+        totalItems: 0,
+        newItems: 0,
+        errors: String(error).substring(0, 500),
+        duration: Math.floor((Date.now() - startTime) / 1000),
+      },
+    });
+
     return NextResponse.json(
-      { success: false, message: "定时采集失败: " + String(error) },
+      { error: "定时任务执行失败", details: String(error) },
       { status: 500 }
     );
   }
 }
 
-async function fetchPage(url: string): Promise<string | null> {
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-    });
-    if (!response.ok) return null;
-    return await response.text();
-  } catch {
-    return null;
-  }
-}
-
-function extractArticlesSimple(html: string, baseUrl: string, sourceName: string) {
-  const articles: Array<{
-    title: string; content: string; summary: string; source: string; imageUrl: string | null; link: string;
-  }> = [];
-  const seen = new Set<string>();
-
-  const aRegex = /<a[^>]*href="([^"]*)"[^>]*>([^<]{6,100})<\/a>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = aRegex.exec(html)) !== null) {
-    let href = m[1];
-    const text = m[2].replace(/<[^>]*>/g, "").trim();
-    if (text.length < 6 || text.length > 80 || seen.has(text)) continue;
-    if (/登录|注册|首页|更多|javascript/.test(text)) continue;
-    if (href.startsWith("/")) href = baseUrl + href;
-    if (!href.startsWith("http")) continue;
-    seen.add(text);
-
-    const imgRegex = /<img[^>]*src="([^"]*)"[^>]*>/gi;
-    let imgUrl: string | null = null;
-    let imgMatch: RegExpExecArray | null;
-    while ((imgMatch = imgRegex.exec(html)) !== null) {
-      const src = imgMatch[1];
-      if (src.startsWith("http") && !/(logo|icon|avatar)/i.test(src)) { imgUrl = src; break; }
-    }
-
-    articles.push({ title: text, content: text, summary: text, source: sourceName, imageUrl: imgUrl, link: href });
-  }
-
-  return articles;
-}
-
-const CATEGORIES_SIMPLE: Record<string, string[]> = {
-  new_game_test: ["测试", "封测", "内测", "公测", "试玩", "Beta", "招募", "预约"],
-  new_package: ["新游", "上线", "发布", "发行", "上架", "开服", "新作", "新游戏"],
-  news: ["新闻", "宣布", "公布", "合作", "收购", "投资", "融资", "财报"],
-  slg_review: ["SLG", "策略", "率土", "三国", "文明", "战棋", "统帅", "战略"],
-  company: ["公司", "财报", "营收", "利润", "腾讯", "网易", "米哈游", "三七", "莉莉丝"],
-  update: ["更新", "版本", "赛季", "资料片", "活动", "新角色", "联动"],
-  ad: ["广告", "投放", "买量", "推广", "营销"],
-  shell_package: ["马甲包", "换皮", "套壳", "克隆", "山寨"],
-  audience: ["用户", "玩家", "DAU", "MAU", "留存", "活跃", "付费"],
-  ad_audience: ["广告受众", "定向", "人群包", "投放人群"],
-  ad_analysis: ["广告分析", "投放分析", "素材分析", "ROI", "回收", "变现"],
-};
-
-function classifyArticleSimple(title: string, content: string): string {
-  const text = (title + " " + content).toLowerCase();
-  const scores: Record<string, number> = {};
-  for (const [category, keywords] of Object.entries(CATEGORIES_SIMPLE)) {
-    scores[category] = 0;
-    for (const kw of keywords) {
-      if (text.includes(kw.toLowerCase())) scores[category]++;
-    }
-  }
-  let best = "news", bestScore = 0;
-  for (const [cat, score] of Object.entries(scores)) {
-    if (score > bestScore) { bestScore = score; best = cat; }
-  }
-  return best;
+function getColumnLabel(column: string): string {
+  const labels: Record<string, string> = {
+    daily_brief: "每日简报",
+    new_game: "新游观察",
+    product_review: "产品测评",
+    gameplay_analysis: "玩法拆解",
+    chart_analysis: "榜单观察",
+    ad_creative: "买量素材",
+    version_update: "版本更新",
+    industry_news: "行业动态",
+    overseas: "海外市场",
+    deep_dive: "深度专题",
+    data_report: "数据报告",
+    game_database: "产品资料库",
+  };
+  return labels[column] || column;
 }

@@ -1,372 +1,329 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { CATEGORIES, getCategory } from "@/lib/categories";
-import type { Entry } from "@/lib/types";
+import { useEffect, useState, useCallback } from "react";
+import { COLUMNS, getColumn, COLUMN_TAG_COLORS } from "@/lib/columns";
+import type { ArticleData, DashboardStats } from "@/lib/types";
 
-function getToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function formatTime(dateStr: string) {
-  const d = new Date(dateStr);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-function EntryCard({ entry, onDelete }: { entry: Entry; onDelete: (id: number) => void }) {
-  const cat = getCategory(entry.category);
-  const [imgError, setImgError] = useState(false);
-
-  return (
-    <div className="glass-card animate-fade-in overflow-hidden group">
-      <a href={`/article/${entry.id}`} className="block">
-        {entry.imageUrl && !imgError ? (
-          <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-800">
-            <img
-              src={entry.imageUrl}
-              alt={entry.title}
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-              loading="lazy"
-              onError={() => setImgError(true)}
-            />
-          </div>
-        ) : (
-          <div className="flex aspect-[16/9] w-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-700">
-            <span className="text-3xl opacity-30">{cat?.icon || "🎮"}</span>
-          </div>
-        )}
-      </a>
-
-      <div className="p-3">
-        {/* Category tag + source + time */}
-        <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-          <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-medium text-cyan-400">
-            {cat?.icon} {cat?.label}
-          </span>
-          {entry.source && (
-            <span className="text-[10px] text-slate-500">{entry.source}</span>
-          )}
-          <span className="ml-auto text-[10px] text-slate-600">
-            {entry.publishedAt ? entry.publishedAt.substring(11, 16) : formatTime(entry.createdAt)}
-          </span>
-        </div>
-
-        {/* Title */}
-        <a href={`/article/${entry.id}`} className="block">
-          <h3 className="text-sm font-medium leading-snug text-slate-200 transition-colors group-hover:text-cyan-400 line-clamp-2">
-            {entry.title}
-          </h3>
-        </a>
-
-        <button
-          onClick={(e) => { e.preventDefault(); onDelete(entry.id); }}
-          className="mt-2 text-[10px] text-slate-600 opacity-0 transition-all hover:text-red-400 group-hover:opacity-100"
-        >
-          删除
-        </button>
-      </div>
-    </div>
-  );
-}
-
+// ===== 首页组件 =====
 export default function HomePage() {
-  const today = getToday();
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [allEntries, setAllEntries] = useState<Entry[]>([]);
+  const [articles, setArticles] = useState<ArticleData[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [activeColumn, setActiveColumn] = useState<string>("all");
+  const [timeFilter, setTimeFilter] = useState<string>("all");
   const [collecting, setCollecting] = useState(false);
-  const [collectMsg, setCollectMsg] = useState<string | null>(null);
-  const [timeFilter, setTimeFilter] = useState<string>("today"); // today, yesterday, week, month, all
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [collectResult, setCollectResult] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Fetch today's entries
-  const fetchToday = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
+  // 加载数据
+  const loadData = useCallback(async () => {
     try {
-      const res = await fetch(`/api/entries?date=${today}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setEntries(data);
-    } catch (e: unknown) {
-      setLoadError(e instanceof Error ? e.message : "请求失败");
-      setEntries([]);
+      const params = new URLSearchParams();
+      if (activeColumn !== "all") params.set("column", activeColumn);
+      if (timeFilter !== "all") params.set("time", timeFilter);
+      params.set("status", "published");
+
+      const [articlesRes, statsRes] = await Promise.all([
+        fetch(`/api/articles?${params}`),
+        fetch("/api/stats"),
+      ]);
+
+      if (articlesRes.ok) {
+        const data = await articlesRes.json();
+        setArticles(data.items || data);
+      }
+      if (statsRes.ok) {
+        setStats(await statsRes.json());
+      }
+    } catch (err) {
+      console.error("加载数据失败:", err);
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, [activeColumn, timeFilter]);
 
-  // Fetch all entries
-  const fetchAll = useCallback(async () => {
-    try {
-      const res = await fetch("/api/entries");
-      const data = await res.json();
-      setAllEntries(data);
-    } catch { /* ignore */ }
-  }, []);
-
-  // Initial load
+  // 自动刷新
   useEffect(() => {
-    fetchToday();
-    fetchAll();
-  }, [fetchToday, fetchAll]);
-
-  // Auto-refresh every 60 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchToday();
-    }, 60000);
+    loadData();
+    if (!autoRefresh) return;
+    const interval = setInterval(loadData, 60000);
     return () => clearInterval(interval);
-  }, [fetchToday]);
+  }, [loadData, autoRefresh]);
 
-  async function handleCollect() {
+  // 手动采集
+  const handleCollect = async () => {
     setCollecting(true);
-    setCollectMsg(null);
+    setCollectResult(null);
     try {
       const res = await fetch("/api/collect", { method: "POST" });
       const data = await res.json();
-      setCollectMsg(data.message || "采集完成");
-      fetchToday();
-      fetchAll();
-    } catch {
-      setCollectMsg("采集请求失败");
+      setCollectResult(`采集完成：新增 ${data.newItems || 0} 条，共 ${data.totalItems || 0} 条`);
+      loadData();
+    } catch (err) {
+      setCollectResult("采集失败，请查看控制台");
     } finally {
       setCollecting(false);
     }
-  }
-
-  async function handleDelete(id: number) {
-    if (!confirm("确定删除？")) return;
-    await fetch(`/api/entries/${id}`, { method: "DELETE" });
-    fetchToday();
-    fetchAll();
-  }
-
-  // Filter entries by time
-  const filterByTime = (items: Entry[]) => {
-    const now = new Date();
-    const todayStr = getToday();
-    const yesterdayStr = new Date(now.getTime() - 86400000).toISOString().split("T")[0];
-    const weekAgo = new Date(now.getTime() - 7 * 86400000).toISOString().split("T")[0];
-    const monthAgo = new Date(now.getTime() - 30 * 86400000).toISOString().split("T")[0];
-
-    switch (timeFilter) {
-      case "today": return items.filter(e => e.date === todayStr);
-      case "yesterday": return items.filter(e => e.date === yesterdayStr);
-      case "week": return items.filter(e => e.date >= weekAgo);
-      case "month": return items.filter(e => e.date >= monthAgo);
-      default: return items;
-    }
   };
 
-  // Get filtered entries
-  const filteredEntries = filterByTime(
-    activeCategory ? allEntries.filter(e => e.category === activeCategory) : allEntries
-  );
-
-  // Group filtered entries by date (descending)
-  const groupedByDate = filteredEntries.reduce(
-    (acc, e) => {
-      if (!acc[e.date]) acc[e.date] = [];
-      acc[e.date].push(e);
-      return acc;
-    },
-    {} as Record<string, Entry[]>,
-  );
-  const dateKeys = Object.keys(groupedByDate).sort((a, b) => b.localeCompare(a));
-
-  // Today's entries (for top section)
-  const todayEntries = entries;
-  const todayFiltered = activeCategory
-    ? todayEntries.filter(e => e.category === activeCategory)
-    : todayEntries;
-
-  // Today grouped by category
-  const todayByCategory = CATEGORIES.map((cat) => ({
-    ...cat,
-    items: todayEntries.filter((e) => e.category === cat.id),
-  })).filter((g) => g.items.length > 0);
-
-  // Time axis options
-  const timeOptions = [
+  const timeFilters = [
+    { id: "all", label: "全部" },
     { id: "today", label: "今日" },
     { id: "yesterday", label: "昨日" },
     { id: "week", label: "本周" },
     { id: "month", label: "本月" },
-    { id: "all", label: "全部" },
   ];
 
+  const filteredArticles = articles;
+
   return (
-    <div className="space-y-5">
-      {/* ===== TOP BAR ===== */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-lg font-bold sm:text-xl">
-            <span className="gradient-text">手游情报</span>
-          </h1>
-          <p className="text-[11px] text-slate-500">自动更新中 · {todayEntries.length} 条今日</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            onClick={handleCollect}
-            disabled={collecting}
-            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 px-3 py-1.5 text-xs font-medium text-white transition-all hover:from-violet-400 hover:to-purple-500 disabled:opacity-50"
-          >
-            {collecting ? (
-              <><span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />采集中</>
-            ) : (
-              <><svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>刷新</>
-            )}
-          </button>
-        </div>
-      </div>
+    <div className="space-y-6">
+      {/* ===== 顶部统计 ===== */}
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
+        <StatCard
+          label="今日新增"
+          value={stats?.todayNewArticles ?? "-"}
+          icon="📰"
+          color="border-l-cyan-500"
+        />
+        <StatCard
+          label="已发布文章"
+          value={stats?.publishedArticles ?? "-"}
+          icon="✅"
+          color="border-l-emerald-500"
+        />
+        <StatCard
+          label="游戏资料库"
+          value={stats?.totalGames ?? "-"}
+          icon="🎮"
+          color="border-l-violet-500"
+        />
+        <StatCard
+          label="待审核"
+          value={stats?.pendingReview ?? "-"}
+          icon="⏳"
+          color="border-l-amber-500"
+        />
+      </section>
 
-      {/* Collect message */}
-      {collectMsg && (
-        <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-300">
-          {collectMsg}
-        </div>
-      )}
-
-      {/* ===== TIME AXIS FILTER (vertical timeline style) ===== */}
-      <div className="flex items-center gap-1 overflow-x-auto scrollbar-none -mx-3 px-3">
-        {timeOptions.map((opt) => (
-          <button
-            key={opt.id}
-            onClick={() => setTimeFilter(opt.id)}
-            className={`shrink-0 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
-              timeFilter === opt.id
-                ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
-                : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <span className="ml-2 shrink-0 text-[10px] text-slate-600">
-          {filteredEntries.length} 条
-        </span>
-      </div>
-
-      {/* ===== CATEGORY TAGS (as article type badges) ===== */}
-      <div ref={scrollRef} className="scrollbar-none -mx-3 overflow-x-auto px-3">
-        <div className="flex gap-1.5">
-          <button
-            onClick={() => setActiveCategory(null)}
-            className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
-              activeCategory === null
-                ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
-                : "bg-white/5 text-slate-400 hover:bg-white/10"
-            }`}
-          >
-            全部
-          </button>
-          {CATEGORIES.map((cat) => {
-            const count = todayEntries.filter((e) => e.category === cat.id).length;
-            return (
+      {/* ===== 操作栏 ===== */}
+      <section className="glass-card-strong p-4">
+        <div className="flex flex-col gap-4">
+          {/* 第一行：采集按钮 + 自动刷新 */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
               <button
-                key={cat.id}
-                onClick={() => setActiveCategory(cat.id)}
-                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
-                  activeCategory === cat.id
-                    ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
-                    : "bg-white/5 text-slate-400 hover:bg-white/10"
+                onClick={handleCollect}
+                disabled={collecting}
+                className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-600 to-purple-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-cyan-500/20 transition-all hover:from-cyan-500 hover:to-purple-500 disabled:opacity-50"
+              >
+                {collecting ? (
+                  <>
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    采集中...
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    采集情报
+                  </>
+                )}
+              </button>
+              {collectResult && (
+                <span className="text-xs text-slate-400 animate-fade-in">{collectResult}</span>
+              )}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-slate-500">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-white/20 bg-white/5 text-cyan-500 focus:ring-cyan-500/50"
+              />
+              自动刷新
+            </label>
+          </div>
+
+          {/* 第二行：时间筛选 */}
+          <div className="flex items-center gap-2 overflow-x-auto scrollbar-none">
+            {timeFilters.map((tf) => (
+              <button
+                key={tf.id}
+                onClick={() => setTimeFilter(tf.id)}
+                className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                  timeFilter === tf.id
+                    ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                    : "text-slate-500 hover:text-slate-300 border border-transparent"
                 }`}
               >
-                {cat.icon} {cat.label}
-                {count > 0 && <span className="ml-1 text-[10px] opacity-60">({count})</span>}
+                {tf.label}
               </button>
-            );
-          })}
+            ))}
+          </div>
+
+          {/* 第三行：栏目标签 */}
+          <div className="flex items-center gap-2 overflow-x-auto scrollbar-none">
+            <button
+              onClick={() => setActiveColumn("all")}
+              className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                activeColumn === "all"
+                  ? "bg-white/10 text-white border border-white/20"
+                  : "text-slate-500 hover:text-slate-300 border border-transparent"
+              }`}
+            >
+              全部
+            </button>
+            {COLUMNS.map((col) => (
+              <button
+                key={col.id}
+                onClick={() => setActiveColumn(col.id)}
+                className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                  activeColumn === col.id
+                    ? `${COLUMN_TAG_COLORS[col.id]} border`
+                    : "text-slate-500 hover:text-slate-300 border border-transparent"
+                }`}
+              >
+                {col.icon} {col.label}
+              </button>
+            ))}
+          </div>
         </div>
+      </section>
+
+      {/* ===== 文章列表 ===== */}
+      <section>
+        {loading ? (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="glass-card overflow-hidden">
+                <div className="skeleton h-40 w-full" />
+                <div className="space-y-2 p-4">
+                  <div className="skeleton h-4 w-3/4" />
+                  <div className="skeleton h-3 w-full" />
+                  <div className="skeleton h-3 w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : filteredArticles.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-slate-600">
+            <div className="text-4xl mb-4">📭</div>
+            <p className="text-sm">暂无情报数据</p>
+            <p className="mt-1 text-xs text-slate-700">点击上方「采集情报」按钮开始采集</p>
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {filteredArticles.map((article, index) => (
+              <ArticleCard key={article.id} article={article} index={index} />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ===== 统计卡片 =====
+function StatCard({
+  label,
+  value,
+  icon,
+  color,
+}: {
+  label: string;
+  value: number | string;
+  icon: string;
+  color: string;
+}) {
+  return (
+    <div className={`glass-card border-l-2 ${color} p-3 sm:p-4`}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-slate-500">{label}</span>
+        <span className="text-sm">{icon}</span>
+      </div>
+      <p className="mt-1 text-xl font-bold tracking-tight sm:text-2xl">{value}</p>
+    </div>
+  );
+}
+
+// ===== 文章卡片 =====
+function ArticleCard({ article, index }: { article: ArticleData; index: number }) {
+  const col = getColumn(article.column);
+  const publishedDate = article.publishedAt
+    ? new Date(article.publishedAt).toLocaleDateString("zh-CN", {
+        month: "short",
+        day: "numeric",
+      })
+    : null;
+
+  return (
+    <a
+      href={`/article/${article.id}`}
+      className={`glass-card group overflow-hidden animate-fade-in stagger-${(index % 6) + 1}`}
+    >
+      {/* 封面图 */}
+      <div className="relative h-40 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-900">
+        {article.imageUrl ? (
+          <img
+            src={article.imageUrl}
+            alt={article.title}
+            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+            loading="lazy"
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center">
+            <div className="text-center">
+              <div className="text-3xl">{col?.icon || "📄"}</div>
+              <div className="mt-1 text-xs text-slate-600">{col?.label || "情报"}</div>
+            </div>
+          </div>
+        )}
+        {/* 栏目标签 */}
+        <div className="absolute left-2 top-2">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+              COLUMN_TAG_COLORS[article.column] || "bg-slate-500/20 text-slate-300"
+            }`}
+          >
+            {col?.icon} {col?.label || article.column}
+          </span>
+        </div>
+        {/* 相关性评分 */}
+        {article.relevanceScore != null && article.relevanceScore > 0 && (
+          <div className="absolute right-2 top-2 rounded-full bg-black/50 px-2 py-0.5 text-[10px] text-slate-400 backdrop-blur-sm">
+            {article.relevanceScore}%
+          </div>
+        )}
       </div>
 
-      {/* ===== CONTENT AREA ===== */}
-      {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
+      {/* 内容 */}
+      <div className="p-3 sm:p-4">
+        <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-200 transition-colors group-hover:text-cyan-400 sm:text-base">
+          {article.title}
+        </h3>
+        {article.summary && (
+          <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-slate-500">
+            {article.summary}
+          </p>
+        )}
+        <div className="mt-3 flex items-center justify-between text-[10px] text-slate-600">
+          <div className="flex items-center gap-2">
+            {article.sourceName && <span>{article.sourceName}</span>}
+            {article.gameName && (
+              <>
+                <span className="text-slate-700">·</span>
+                <span className="text-slate-500">{article.gameName}</span>
+              </>
+            )}
+          </div>
+          {publishedDate && <span>{publishedDate}</span>}
         </div>
-      ) : loadError ? (
-        <div className="flex flex-col items-center justify-center py-16 text-slate-500">
-          <span className="text-2xl">⚠️</span>
-          <p className="mt-2 text-xs text-red-400">加载失败</p>
-          <button onClick={fetchToday} className="mt-3 rounded-lg bg-white/10 px-4 py-2 text-xs text-slate-300">重试</button>
-        </div>
-      ) : timeFilter === "today" && !activeCategory ? (
-        /* ===== TODAY: Grouped by category ===== */
-        todayByCategory.length > 0 ? (
-          <div className="space-y-5">
-            {todayByCategory.map((group) => (
-              <div key={group.id}>
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="text-sm">{group.icon}</span>
-                  <h3 className="text-xs font-medium text-slate-400">{group.label}</h3>
-                  <span className="text-[10px] text-slate-600">{group.items.length}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                  {group.items.map((entry) => (
-                    <EntryCard key={entry.id} entry={entry} onDelete={handleDelete} />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-500">
-            <span className="text-3xl">📋</span>
-            <p className="mt-2 text-xs">暂无情报，点击右上角「刷新」采集</p>
-          </div>
-        )
-      ) : (
-        /* ===== TIME FILTER VIEW: Vertical timeline by date ===== */
-        dateKeys.length > 0 ? (
-          <div className="space-y-6">
-            {dateKeys.map((date, dateIdx) => (
-              <div key={date} className="relative pl-5">
-                {/* Timeline line */}
-                {dateIdx < dateKeys.length - 1 && (
-                  <div className="absolute left-[7px] top-4 bottom-0 w-px bg-white/10" />
-                )}
-                {/* Timeline dot */}
-                <div className="absolute left-0 top-1.5 h-3.5 w-3.5 rounded-full border-2 border-cyan-500/50 bg-slate-900" />
-                
-                {/* Date header */}
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="text-xs font-medium text-cyan-400">{date}</span>
-                  <span className="text-[10px] text-slate-600">{groupedByDate[date].length} 条</span>
-                  {date === today && (
-                    <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400">今日</span>
-                  )}
-                </div>
-
-                {/* Cards grid */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                  {groupedByDate[date].slice(0, 8).map((entry) => (
-                    <EntryCard key={entry.id} entry={entry} onDelete={handleDelete} />
-                  ))}
-                </div>
-
-                {groupedByDate[date].length > 8 && (
-                  <a
-                    href={`/date/${date}`}
-                    className="mt-2 block text-center text-[10px] text-slate-600 transition-colors hover:text-cyan-400"
-                  >
-                    查看全部 {groupedByDate[date].length} 条 →
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-500">
-            <span className="text-3xl">📭</span>
-            <p className="mt-2 text-xs">该时间范围内暂无情报</p>
-          </div>
-        )
-      )}
-    </div>
+      </div>
+    </a>
   );
 }

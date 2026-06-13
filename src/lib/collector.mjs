@@ -1,70 +1,101 @@
 /**
- * 手游情报自动采集脚本 v6
- * - 提取文章原始发布时间
- * - 无图时根据标题生成配图
+ * SLG手游情报自动采集脚本 v7
+ * - 适配新Schema（Article模型）
+ * - 输出栏目分类、相关性评分、游戏/公司名称
  * - 10+ 采集源
  */
 
-const CATEGORIES = {
-  new_game_test: ["测试", "封测", "内测", "公测", "试玩", "Beta", "招募", "预约", "demo", "上线", "开测"],
-  new_package: ["新游", "上线", "发布", "发行", "上架", "开服", "新作", "新游戏", "launch", "release", "正式上线", "首发"],
-  news: ["新闻", "宣布", "公布", "合作", "收购", "投资", "融资", "IPO", "财报", "战略合作", "出海"],
-  slg_review: ["SLG", "策略", "率土", "三国", "文明", "战棋", "统帅", "战略", "攻城", "率土之滨", "万国觉醒", "COK"],
-  company: ["公司", "财报", "营收", "利润", "裁员", "招聘", "工作室", "腾讯", "网易", "米哈游", "三七", "莉莉丝", "字节", "B站", "心动"],
-  update: ["更新", "版本", "赛季", "资料片", "活动", "新角色", "新英雄", "patch", "update", "新增", "联动", "周年庆"],
-  ad: ["广告", "投放", "买量", "推广", "营销", "素材", "UA", "获客"],
-  shell_package: ["马甲包", "换皮", "套壳", "克隆", "山寨", "搬运", "换皮"],
-  audience: ["用户", "玩家", "DAU", "MAU", "留存", "活跃", "付费", "ARPU", "LTV", "下载量", "流水"],
-  ad_audience: ["广告受众", "定向", "人群包", "投放人群", "精准", "用户画像"],
-  ad_analysis: ["广告分析", "投放分析", "素材分析", "渠道分析", "ROI", "回收", "变现", "LTV", "投放策略"],
+const COLUMN_KEYWORDS = {
+  new_game: ["新游", "上线", "公测", "测试", "开服", "预约", "新作", "曝光", "首曝", "launch", "release", "新游戏", "新包"],
+  product_review: ["测评", "评测", "评价", "体验", "试玩", "深度", "review", "review"],
+  gameplay_analysis: ["玩法", "系统", "机制", "战斗", "城建", "养成", "联盟", "赛季", "拆解", "设计"],
+  chart_analysis: ["榜单", "排名", "排行", "收入", "下载", "畅销", "免费榜", "sensor tower", "data.ai", "七麦"],
+  ad_creative: ["买量", "投放", "素材", "广告", "roi", "转化", "创意", "视频素材", "投放策略"],
+  version_update: ["版本", "更新", "新赛季", "新版本", "活动", "新玩法", "赛季更新", "大版本"],
+  industry_news: ["收购", "投资", "融资", "ipo", "上市", "财报", "营收", "利润", "裁员", "人事", "合作"],
+  overseas: ["出海", "海外", "全球化", "本地化", "日服", "韩服", "欧美", "东南亚", "日本", "韩国", "美国"],
+  deep_dive: ["深度", "研究", "趋势", "洞察", "报告", "白皮书", "行业", "市场", "用户"],
+  data_report: ["数据", "报告", "白皮书", "调研", "统计", "占比", "增长率", "同比", "环比"],
 };
 
-// Category color mapping for auto-generated images
+const SLG_KEYWORDS = {
+  'slg': 100, '策略游戏': 90, '策略': 60, '4x': 80, '率土like': 80, '率土': 70,
+  '三国志战略版': 70, '万国觉醒': 70, 'rok': 70, 'rise of kingdoms': 70,
+  '列王的纷争': 70, 'clash of clans': 60, 'coc': 60, '部落冲突': 60,
+  '王国纪元': 70, 'lords mobile': 70, '无尽的拉格朗日': 70, '率土之滨': 70,
+  '重返帝国': 60, '文明': 60, '文明与征服': 60, '鸿图之下': 60,
+  '三国': 40, '赛季制': 60, '赛季': 40, '大地图': 50, '沙盘': 50,
+  '自由行军': 50, '攻城': 50, '攻城战': 60, '联盟战': 50, 'gvg': 60,
+  '买量': 60, '投放': 50, '素材': 50, '广告': 40, 'roi': 50, 'ltv': 50, 'arpu': 50,
+  '出海': 50, '海外': 40, '全球化': 40, '本地化': 40,
+  '网易': 30, '腾讯': 30, '莉莉丝': 40, 'funplus': 50, '点点互动': 40,
+  '三七': 30, '灵犀互娱': 40, '灵犀': 30, '游族': 30,
+  'sensor tower': 50, 'data.ai': 50, 'app growing': 50, '广大大': 50,
+};
+
 const CATEGORY_COLORS = {
-  new_game_test: { bg: "1a3a5c", fg: "06b6d4", icon: "🎮" },
-  new_package: { bg: "1a4a3a", fg: "10b981", icon: "📦" },
-  news: { bg: "1a3a5c", fg: "3b82f6", icon: "📰" },
-  slg_review: { bg: "3a2a1a", fg: "f59e0b", icon: "⚔️" },
-  company: { bg: "2a1a3a", fg: "8b5cf6", icon: "🏢" },
-  update: { bg: "1a3a4a", fg: "06b6d4", icon: "🔄" },
-  ad: { bg: "3a1a2a", fg: "ec4899", icon: "📢" },
-  shell_package: { bg: "2a1a2a", fg: "d946ef", icon: "🎭" },
-  audience: { bg: "1a3a2a", fg: "22c55e", icon: "👥" },
-  ad_audience: { bg: "3a1a1a", fg: "ef4444", icon: "🎯" },
-  ad_analysis: { bg: "1a1a3a", fg: "6366f1", icon: "📊" },
+  new_game: { bg: "1a3a5c", fg: "06b6d4", icon: "🆕" },
+  product_review: { bg: "1a3a4a", fg: "0ea5e9", icon: "🔍" },
+  gameplay_analysis: { bg: "2a1a3a", fg: "8b5cf6", icon: "⚙️" },
+  chart_analysis: { bg: "1a3a4a", fg: "06b6d4", icon: "📊" },
+  ad_creative: { bg: "3a1a2a", fg: "ec4899", icon: "🎬" },
+  version_update: { bg: "1a3a5c", fg: "3b82f6", icon: "🔄" },
+  industry_news: { bg: "2a1a3a", fg: "6366f1", icon: "🏢" },
+  overseas: { bg: "1a4a3a", fg: "14b8a6", icon: "🌍" },
+  deep_dive: { bg: "3a1a1a", fg: "f43f5e", icon: "📚" },
+  data_report: { bg: "3a2a1a", fg: "f59e0b", icon: "📈" },
 };
 
-function classifyArticle(title, content) {
-  const text = (title + " " + content).toLowerCase();
+function calculateRelevance(title, content) {
+  const text = `${title} ${content || ''}`.toLowerCase();
+  let score = 0;
+  let matchedKeywords = 0;
+  for (const [keyword, weight] of Object.entries(SLG_KEYWORDS)) {
+    if (text.includes(keyword.toLowerCase())) { score += weight; matchedKeywords++; }
+  }
+  if (matchedKeywords > 0) score += 30;
+  const titleLower = title.toLowerCase();
+  for (const [keyword, weight] of Object.entries(SLG_KEYWORDS)) {
+    if (titleLower.includes(keyword.toLowerCase())) score += weight;
+  }
+  return Math.min(100, Math.max(0, score));
+}
+
+function autoClassify(title, content) {
+  const text = `${title} ${content || ''}`.toLowerCase();
   const scores = {};
-  for (const [category, keywords] of Object.entries(CATEGORIES)) {
-    scores[category] = 0;
+  for (const [column, keywords] of Object.entries(COLUMN_KEYWORDS)) {
+    scores[column] = 0;
     for (const kw of keywords) {
-      let pos = 0;
-      while ((pos = text.indexOf(kw.toLowerCase(), pos)) !== -1) {
-        scores[category]++;
-        pos += kw.length;
-      }
+      if (text.includes(kw)) scores[column]++;
+      if (title.toLowerCase().includes(kw)) scores[column] += 3;
     }
   }
-  let best = "news", bestScore = 0;
-  for (const [cat, score] of Object.entries(scores)) {
-    if (score > bestScore) { bestScore = score; best = cat; }
+  let best = 'industry_news', bestScore = 0;
+  for (const [col, score] of Object.entries(scores)) {
+    if (score > bestScore) { bestScore = score; best = col; }
   }
   return best;
 }
 
-/**
- * Generate a placeholder image URL using a simple SVG data URI
- * based on the article title and category
- */
-function generatePlaceholderImage(title, category) {
-  const colors = CATEGORY_COLORS[category] || CATEGORY_COLORS.news;
+function extractGameNames(title, content) {
+  const text = `${title} ${content || ''}`;
+  const names = [];
+  const patterns = [/《([^》]+)》/g, /「([^」]+)」/g, /"([^"]+)"/g, /'([^']+)'/g];
+  for (const pattern of patterns) {
+    const matches = text.matchAll(pattern);
+    for (const m of matches) {
+      const name = m[1].trim();
+      if (name.length >= 2 && name.length <= 20) names.push(name);
+    }
+  }
+  return [...new Set(names)];
+}
+
+function generatePlaceholderImage(title, column) {
+  const colors = CATEGORY_COLORS[column] || CATEGORY_COLORS.industry_news;
   const shortTitle = title.length > 30 ? title.substring(0, 28) + "…" : title;
-  const encodedTitle = encodeURIComponent(shortTitle);
-  
-  // Use a simple colored SVG with the category icon and first few chars of title
-  return `https://placehold.co/400x225/${colors.bg}/${colors.fg}?text=${encodedTitle}&font=noto-sans`;
+  return `https://placehold.co/400x225/${colors.bg}/${colors.fg}?text=${encodeURIComponent(shortTitle)}&font=noto-sans`;
 }
 
 async function fetchWithTimeout(url, timeoutMs = 10000) {
@@ -82,9 +113,7 @@ async function fetchWithTimeout(url, timeoutMs = 10000) {
     clearTimeout(timeout);
     if (!response.ok) return null;
     return await response.text();
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function extractAllImages(html) {
@@ -107,73 +136,23 @@ function findNearestImage(images, pos) {
   return candidates[0].src;
 }
 
-/**
- * Extract published time from HTML
- */
 function extractPublishedTime(html) {
-  // Try multiple patterns
   const patterns = [
     /<time[^>]*datetime="([^"]*)"[^>]*>/i,
     /<time[^>]*>([^<]{10,30})<\/time>/i,
     /<span[^>]*class="[^"]*(?:time|date|pub)[^"]*"[^>]*>([^<]{10,30})<\/span>/i,
-    /<em[^>]*class="[^"]*(?:time|date)[^"]*"[^>]*>([^<]{10,30})<\/em>/i,
     /(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s*\d{1,2}:\d{2})/,
     /(\d{4}[-/]\d{1,2}[-/]\d{1,2})/,
   ];
-
   for (const pattern of patterns) {
     const m = pattern.exec(html);
     if (m) {
-      let timeStr = m[1] || m[0];
-      // Clean up
-      timeStr = timeStr.replace(/<[^>]*>/g, "").trim();
-      // Try to parse
+      let timeStr = (m[1] || m[0]).replace(/<[^>]*>/g, "").trim();
       const d = new Date(timeStr);
-      if (!isNaN(d.getTime())) {
-        return d.toISOString().replace("T", " ").substring(0, 16);
-      }
+      if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
     }
   }
   return null;
-}
-
-async function fetchArticleContent(url) {
-  try {
-    const html = await fetchWithTimeout(url, 8000);
-    if (!html) return { contentHtml: null, publishedAt: null };
-
-    const publishedAt = extractPublishedTime(html);
-
-    let content = null;
-    const patterns = [
-      /<article[^>]*>([\s\S]*?)<\/article>/i,
-      /<div[^>]*class="[^"]*(?:article|content|post|main|text|detail|rich_media_content|article-content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
-      /<div[^>]*id="[^"]*(?:article|content|post|main|text|detail)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
-    ];
-    for (const pattern of patterns) {
-      const m = pattern.exec(html);
-      if (m) { content = m[1]; break; }
-    }
-    if (!content) {
-      const bodyMatch = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(html);
-      if (bodyMatch) content = bodyMatch[1];
-    }
-    if (content) {
-      content = content
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<style[\s\S]*?<\/style>/gi, "")
-        .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
-        .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-        .replace(/<header[\s\S]*?<\/header>/gi, "")
-        .replace(/<footer[\s\S]*?<\/footer>/gi, "")
-        .trim();
-      if (content.length < 50) content = null;
-    }
-
-    return { contentHtml: content, publishedAt };
-  } catch {
-    return { contentHtml: null, publishedAt: null };
-  }
 }
 
 function extractArticles(html, baseUrl) {
@@ -182,20 +161,22 @@ function extractArticles(html, baseUrl) {
   const allImages = extractAllImages(html);
   const fallbackImages = allImages.map(i => i.src);
 
-  const itemRegex = /<div[^>]*class="[^"]*(?:item|card|post|entry|news|list|box|pic|img|article|hot|recommend)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
-  const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
-  const sectionRegex = /<section[^>]*>([\s\S]*?)<\/section>/gi;
-
   const blocks = [];
-  let m;
-  while ((m = itemRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
-  while ((m = liRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
-  while ((m = sectionRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
+  const patterns = [
+    /<div[^>]*class="[^"]*(?:item|card|post|entry|news|list|box|pic|img|article|hot|recommend)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
+    /<li[^>]*>([\s\S]*?)<\/li>/gi,
+    /<section[^>]*>([\s\S]*?)<\/section>/gi,
+  ];
+  for (const pattern of patterns) {
+    let m;
+    while ((m = pattern.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
+  }
 
   const targets = blocks.length > 0 ? blocks : [{ html, pos: 0 }];
 
   for (const { html: block, pos: blockPos } of targets) {
     const linkRegex = /<a[^>]*href="([^"]*)"[^>]*>([^<]{6,100})<\/a>/gi;
+    let m;
     while ((m = linkRegex.exec(block)) !== null) {
       let href = m[1];
       const text = m[2].replace(/<[^>]*>/g, "").trim();
@@ -206,43 +187,32 @@ function extractArticles(html, baseUrl) {
       if (!href.startsWith("http")) continue;
       seen.add(text);
 
-      // Find image
       let imgUrl = null;
-
-      // 1. In the same <a> tag
       const escapedHref = href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const aTagMatch = new RegExp(`<a[^>]*href="[^"]*${escapedHref}"[^>]*>([\\s\\S]*?)<\\/a>`, 'i').exec(html);
       if (aTagMatch) {
         const innerImg = /<img[^>]*src="([^"]*)"[^>]*>/i.exec(aTagMatch[1]);
         if (innerImg && innerImg[1].startsWith("http") && !/(logo|icon|avatar)/i.test(innerImg[1])) imgUrl = innerImg[1];
       }
-
-      // 2. In the block
       if (!imgUrl) {
-        const blockImgRegex = /<img[^>]*src="([^"]*)"[^>]*>/i;
-        const blockImg = blockImgRegex.exec(block);
+        const blockImg = /<img[^>]*src="([^"]*)"[^>]*>/i.exec(block);
         if (blockImg) {
           const src = blockImg[1];
           if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg|pixel)/i.test(src)) imgUrl = src;
         }
       }
-
-      // 3. Nearest in full HTML
       if (!imgUrl) {
         const linkPosInHtml = html.indexOf(href);
         if (linkPosInHtml > 0) imgUrl = findNearestImage(allImages, linkPosInHtml);
       }
-
-      // 4. First valid fallback
       if (!imgUrl && fallbackImages.length > 0) {
         for (const fi of fallbackImages) {
           if (!/(logo|icon|avatar)/i.test(fi)) { imgUrl = fi; break; }
         }
       }
 
-      // Extract description
-      const descRegex = /<p[^>]*>([^<]{10,200})<\/p>/gi;
       let summary = null;
+      const descRegex = /<p[^>]*>([^<]{10,200})<\/p>/gi;
       let descMatch;
       while ((descMatch = descRegex.exec(block)) !== null) {
         const d = descMatch[1].trim();
@@ -252,10 +222,10 @@ function extractArticles(html, baseUrl) {
       articles.push({
         title: text,
         content: text,
-        summary: summary || text,
-        source: new URL(baseUrl).hostname.replace("www.", ""),
+        summary: summary || text.substring(0, 100),
+        sourceName: new URL(baseUrl).hostname.replace("www.", ""),
         imageUrl: imgUrl,
-        link: href,
+        sourceUrl: href,
       });
     }
   }
@@ -270,7 +240,7 @@ async function scrapeWeChat() {
       const html = await fetchWithTimeout(`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(keyword)}`, 8000);
       if (!html) continue;
       const articles = extractArticles(html, "https://weixin.sogou.com");
-      for (const article of articles) { article.source = "微信公众号"; results.push(article); }
+      for (const article of articles) { article.sourceName = "微信公众号"; results.push(article); }
     } catch { continue; }
   }
   return results;
@@ -295,14 +265,11 @@ async function scrapeSource(url, name, base) {
 async function main() {
   const promises = SOURCES.map(s => scrapeSource(s.url, s.name, s.base));
   promises.push(scrapeWeChat());
-
   const sources = await Promise.allSettled(promises);
 
   const allResults = [];
   for (const result of sources) {
-    if (result.status === "fulfilled") {
-      allResults.push(...result.value);
-    }
+    if (result.status === "fulfilled") allResults.push(...result.value);
   }
 
   const seen = new Set();
@@ -315,22 +282,36 @@ async function main() {
 
   // Fetch article content and published time for top items
   const topItems = unique.slice(0, 15);
-  const contentResults = await Promise.allSettled(topItems.map(async (item) => {
-    if (item.link) {
-      const { contentHtml, publishedAt } = await fetchArticleContent(item.link);
-      if (contentHtml) item.contentHtml = contentHtml;
-      if (publishedAt) item.publishedAt = publishedAt;
+  await Promise.allSettled(topItems.map(async (item) => {
+    if (item.sourceUrl) {
+      const html = await fetchWithTimeout(item.sourceUrl, 8000);
+      if (html) {
+        const publishedAt = extractPublishedTime(html);
+        if (publishedAt) item.publishedAt = publishedAt;
+      }
     }
   }));
 
+  // Transform to new format
   const output = unique.map((item) => {
-    const category = classifyArticle(item.title, item.content);
-    // Generate placeholder image if no image found
-    const imageUrl = item.imageUrl || generatePlaceholderImage(item.title, category);
+    const column = autoClassify(item.title, item.content);
+    const relevanceScore = calculateRelevance(item.title, item.content);
+    const gameNames = extractGameNames(item.title, item.content);
+    const imageUrl = item.imageUrl || generatePlaceholderImage(item.title, column);
+
     return {
-      ...item,
+      title: item.title,
+      summary: item.summary || item.title.substring(0, 100),
+      content: item.content,
+      column,
+      relevanceScore,
+      sourceName: item.sourceName,
+      sourceUrl: item.sourceUrl,
       imageUrl,
-      category,
+      gameName: gameNames.length > 0 ? gameNames[0] : null,
+      publishedAt: item.publishedAt || null,
+      sourceType: item.sourceName === "微信公众号" ? "wechat" : "media",
+      status: "candidate",
     };
   });
 
