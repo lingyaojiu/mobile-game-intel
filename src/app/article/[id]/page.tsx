@@ -43,7 +43,7 @@ export default function ArticlePage() {
   return (
     <div className="mx-auto max-w-3xl">
       <a
-        href={document?.referrer?.includes("/history") ? "/history" : "/"}
+        href="/"
         className="mb-4 inline-block text-xs text-slate-500 transition-colors hover:text-cyan-400"
       >
         ← 返回

@@ -178,6 +178,8 @@ export async function POST() {
       scrapeSource("https://www.gamersky.com/news/", "游民星空", 12),
       scrapeSource("https://www.taptap.cn/top/new", "TapTap", 12),
       scrapeSource("https://www.gamelook.com.cn/", "GameLook", 10),
+      scrapeSource("https://youxichaguan.com/", "游戏茶馆", 10),
+      scrapeSource("https://www.gameres.com/", "游戏研究社", 10),
       scrapeWeChat(),
     ]);
 
