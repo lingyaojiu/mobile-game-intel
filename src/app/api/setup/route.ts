@@ -12,6 +12,7 @@ export async function GET() {
       `ALTER TABLE "Entry" ADD COLUMN IF NOT EXISTS "imageUrl" TEXT`,
       `ALTER TABLE "Entry" ADD COLUMN IF NOT EXISTS "link" TEXT`,
       `ALTER TABLE "Entry" ADD COLUMN IF NOT EXISTS "contentHtml" TEXT`,
+      `ALTER TABLE "Entry" ADD COLUMN IF NOT EXISTS "publishedAt" TEXT`,
     ];
 
     for (const sql of alterCommands) {

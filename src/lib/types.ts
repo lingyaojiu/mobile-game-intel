@@ -9,6 +9,7 @@ export interface Entry {
   imageUrl: string | null;
   link: string | null;
   contentHtml: string | null;
+  publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -23,6 +24,7 @@ export interface CreateEntryInput {
   imageUrl?: string;
   link?: string;
   contentHtml?: string;
+  publishedAt?: string;
 }
 
 export interface UpdateEntryInput {
@@ -33,4 +35,5 @@ export interface UpdateEntryInput {
   imageUrl?: string;
   link?: string;
   contentHtml?: string;
+  publishedAt?: string;
 }

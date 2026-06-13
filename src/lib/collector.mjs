@@ -1,9 +1,8 @@
 /**
- * 手游情报自动采集脚本 v5
- * - 10+ 采集源：游民星空、TapTap、GameLook、游戏葡萄、游戏陀螺、游戏茶馆、触乐、微信公众号
- * - 改进图片提取：从全文范围搜索图片，按位置关联
- * - 抓取文章正文HTML用于网页内阅读
- * - 用法: node src/lib/collector.mjs
+ * 手游情报自动采集脚本 v6
+ * - 提取文章原始发布时间
+ * - 无图时根据标题生成配图
+ * - 10+ 采集源
  */
 
 const CATEGORIES = {
@@ -18,6 +17,21 @@ const CATEGORIES = {
   audience: ["用户", "玩家", "DAU", "MAU", "留存", "活跃", "付费", "ARPU", "LTV", "下载量", "流水"],
   ad_audience: ["广告受众", "定向", "人群包", "投放人群", "精准", "用户画像"],
   ad_analysis: ["广告分析", "投放分析", "素材分析", "渠道分析", "ROI", "回收", "变现", "LTV", "投放策略"],
+};
+
+// Category color mapping for auto-generated images
+const CATEGORY_COLORS = {
+  new_game_test: { bg: "1a3a5c", fg: "06b6d4", icon: "🎮" },
+  new_package: { bg: "1a4a3a", fg: "10b981", icon: "📦" },
+  news: { bg: "1a3a5c", fg: "3b82f6", icon: "📰" },
+  slg_review: { bg: "3a2a1a", fg: "f59e0b", icon: "⚔️" },
+  company: { bg: "2a1a3a", fg: "8b5cf6", icon: "🏢" },
+  update: { bg: "1a3a4a", fg: "06b6d4", icon: "🔄" },
+  ad: { bg: "3a1a2a", fg: "ec4899", icon: "📢" },
+  shell_package: { bg: "2a1a2a", fg: "d946ef", icon: "🎭" },
+  audience: { bg: "1a3a2a", fg: "22c55e", icon: "👥" },
+  ad_audience: { bg: "3a1a1a", fg: "ef4444", icon: "🎯" },
+  ad_analysis: { bg: "1a1a3a", fg: "6366f1", icon: "📊" },
 };
 
 function classifyArticle(title, content) {
@@ -38,6 +52,19 @@ function classifyArticle(title, content) {
     if (score > bestScore) { bestScore = score; best = cat; }
   }
   return best;
+}
+
+/**
+ * Generate a placeholder image URL using a simple SVG data URI
+ * based on the article title and category
+ */
+function generatePlaceholderImage(title, category) {
+  const colors = CATEGORY_COLORS[category] || CATEGORY_COLORS.news;
+  const shortTitle = title.length > 30 ? title.substring(0, 28) + "…" : title;
+  const encodedTitle = encodeURIComponent(shortTitle);
+  
+  // Use a simple colored SVG with the category icon and first few chars of title
+  return `https://placehold.co/400x225/${colors.bg}/${colors.fg}?text=${encodedTitle}&font=noto-sans`;
 }
 
 async function fetchWithTimeout(url, timeoutMs = 10000) {
@@ -80,10 +107,43 @@ function findNearestImage(images, pos) {
   return candidates[0].src;
 }
 
+/**
+ * Extract published time from HTML
+ */
+function extractPublishedTime(html) {
+  // Try multiple patterns
+  const patterns = [
+    /<time[^>]*datetime="([^"]*)"[^>]*>/i,
+    /<time[^>]*>([^<]{10,30})<\/time>/i,
+    /<span[^>]*class="[^"]*(?:time|date|pub)[^"]*"[^>]*>([^<]{10,30})<\/span>/i,
+    /<em[^>]*class="[^"]*(?:time|date)[^"]*"[^>]*>([^<]{10,30})<\/em>/i,
+    /(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s*\d{1,2}:\d{2})/,
+    /(\d{4}[-/]\d{1,2}[-/]\d{1,2})/,
+  ];
+
+  for (const pattern of patterns) {
+    const m = pattern.exec(html);
+    if (m) {
+      let timeStr = m[1] || m[0];
+      // Clean up
+      timeStr = timeStr.replace(/<[^>]*>/g, "").trim();
+      // Try to parse
+      const d = new Date(timeStr);
+      if (!isNaN(d.getTime())) {
+        return d.toISOString().replace("T", " ").substring(0, 16);
+      }
+    }
+  }
+  return null;
+}
+
 async function fetchArticleContent(url) {
   try {
     const html = await fetchWithTimeout(url, 8000);
-    if (!html) return null;
+    if (!html) return { contentHtml: null, publishedAt: null };
+
+    const publishedAt = extractPublishedTime(html);
+
     let content = null;
     const patterns = [
       /<article[^>]*>([\s\S]*?)<\/article>/i,
@@ -98,18 +158,22 @@ async function fetchArticleContent(url) {
       const bodyMatch = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(html);
       if (bodyMatch) content = bodyMatch[1];
     }
-    if (!content) return null;
-    content = content
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
-      .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-      .replace(/<header[\s\S]*?<\/header>/gi, "")
-      .replace(/<footer[\s\S]*?<\/footer>/gi, "")
-      .trim();
-    if (content.length < 50) return null;
-    return content;
-  } catch { return null; }
+    if (content) {
+      content = content
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+        .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+        .replace(/<header[\s\S]*?<\/header>/gi, "")
+        .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+        .trim();
+      if (content.length < 50) content = null;
+    }
+
+    return { contentHtml: content, publishedAt };
+  } catch {
+    return { contentHtml: null, publishedAt: null };
+  }
 }
 
 function extractArticles(html, baseUrl) {
@@ -142,19 +206,18 @@ function extractArticles(html, baseUrl) {
       if (!href.startsWith("http")) continue;
       seen.add(text);
 
-      // Find image - try multiple approaches
+      // Find image
       let imgUrl = null;
 
-      // 1. Look for img in the same <a> tag
-      const aTagMatch = new RegExp(`<a[^>]*href="[^"]*${escapeRegExp(href)}"[^>]*>([\\s\\S]*?)<\\/a>`, 'i').exec(html);
+      // 1. In the same <a> tag
+      const escapedHref = href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const aTagMatch = new RegExp(`<a[^>]*href="[^"]*${escapedHref}"[^>]*>([\\s\\S]*?)<\\/a>`, 'i').exec(html);
       if (aTagMatch) {
         const innerImg = /<img[^>]*src="([^"]*)"[^>]*>/i.exec(aTagMatch[1]);
-        if (innerImg && innerImg[1].startsWith("http") && !/(logo|icon|avatar)/i.test(innerImg[1])) {
-          imgUrl = innerImg[1];
-        }
+        if (innerImg && innerImg[1].startsWith("http") && !/(logo|icon|avatar)/i.test(innerImg[1])) imgUrl = innerImg[1];
       }
 
-      // 2. Look for img in the block
+      // 2. In the block
       if (!imgUrl) {
         const blockImgRegex = /<img[^>]*src="([^"]*)"[^>]*>/i;
         const blockImg = blockImgRegex.exec(block);
@@ -164,13 +227,13 @@ function extractArticles(html, baseUrl) {
         }
       }
 
-      // 3. Nearest image in full HTML
+      // 3. Nearest in full HTML
       if (!imgUrl) {
         const linkPosInHtml = html.indexOf(href);
         if (linkPosInHtml > 0) imgUrl = findNearestImage(allImages, linkPosInHtml);
       }
 
-      // 4. First valid fallback image
+      // 4. First valid fallback
       if (!imgUrl && fallbackImages.length > 0) {
         for (const fi of fallbackImages) {
           if (!/(logo|icon|avatar)/i.test(fi)) { imgUrl = fi; break; }
@@ -199,10 +262,6 @@ function extractArticles(html, baseUrl) {
   return articles;
 }
 
-function escapeRegExp(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 async function scrapeWeChat() {
   const results = [];
   const keywords = ["手游", "游戏行业", "SLG", "新游发布", "游戏公司", "游戏出海", "游戏广告", "游戏买量"];
@@ -217,7 +276,6 @@ async function scrapeWeChat() {
   return results;
 }
 
-// Source definitions
 const SOURCES = [
   { url: "https://www.gamersky.com/news/", name: "游民星空", base: "https://www.gamersky.com" },
   { url: "https://www.taptap.cn/top/new", name: "TapTap", base: "https://www.taptap.cn" },
@@ -255,19 +313,26 @@ async function main() {
     return true;
   });
 
-  // Fetch article content for top items
+  // Fetch article content and published time for top items
   const topItems = unique.slice(0, 15);
-  await Promise.allSettled(topItems.map(async (item) => {
+  const contentResults = await Promise.allSettled(topItems.map(async (item) => {
     if (item.link) {
-      const html = await fetchArticleContent(item.link);
-      if (html) item.contentHtml = html;
+      const { contentHtml, publishedAt } = await fetchArticleContent(item.link);
+      if (contentHtml) item.contentHtml = contentHtml;
+      if (publishedAt) item.publishedAt = publishedAt;
     }
   }));
 
-  const output = unique.map((item) => ({
-    ...item,
-    category: classifyArticle(item.title, item.content),
-  }));
+  const output = unique.map((item) => {
+    const category = classifyArticle(item.title, item.content);
+    // Generate placeholder image if no image found
+    const imageUrl = item.imageUrl || generatePlaceholderImage(item.title, category);
+    return {
+      ...item,
+      imageUrl,
+      category,
+    };
+  });
 
   process.stdout.write(JSON.stringify(output));
 }

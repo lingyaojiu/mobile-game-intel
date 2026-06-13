@@ -18,6 +18,20 @@ const CATEGORIES: Record<string, string[]> = {
   ad_analysis: ["广告分析", "投放分析", "素材分析", "渠道分析", "ROI", "回收", "变现", "LTV"],
 };
 
+const CATEGORY_COLORS: Record<string, { bg: string; fg: string }> = {
+  new_game_test: { bg: "1a3a5c", fg: "06b6d4" },
+  new_package: { bg: "1a4a3a", fg: "10b981" },
+  news: { bg: "1a3a5c", fg: "3b82f6" },
+  slg_review: { bg: "3a2a1a", fg: "f59e0b" },
+  company: { bg: "2a1a3a", fg: "8b5cf6" },
+  update: { bg: "1a3a4a", fg: "06b6d4" },
+  ad: { bg: "3a1a2a", fg: "ec4899" },
+  shell_package: { bg: "2a1a2a", fg: "d946ef" },
+  audience: { bg: "1a3a2a", fg: "22c55e" },
+  ad_audience: { bg: "3a1a1a", fg: "ef4444" },
+  ad_analysis: { bg: "1a1a3a", fg: "6366f1" },
+};
+
 function classifyArticle(title: string, content: string): string {
   const text = (title + " " + content).toLowerCase();
   const scores: Record<string, number> = {};
@@ -31,6 +45,12 @@ function classifyArticle(title: string, content: string): string {
   let best = "news", bestScore = 0;
   for (const [cat, score] of Object.entries(scores)) { if (score > bestScore) { bestScore = score; best = cat; } }
   return best;
+}
+
+function generatePlaceholderImage(title: string, category: string): string {
+  const c = CATEGORY_COLORS[category] || CATEGORY_COLORS.news;
+  const short = encodeURIComponent(title.length > 28 ? title.substring(0, 26) + ".." : title);
+  return `https://placehold.co/400x225/${c.bg}/${c.fg}?text=${short}&font=noto-sans`;
 }
 
 async function fetchPage(url: string): Promise<string | null> {
@@ -60,10 +80,28 @@ function extractAllImages(html: string): Array<{ src: string; pos: number }> {
 }
 
 function findNearestImage(images: Array<{ src: string; pos: number }>, pos: number): string | null {
-  const candidates = images.filter(img => (img.pos > pos - 3000 && img.pos < pos + 2000));
+  const candidates = images.filter(img => (img.pos > pos - 4000 && img.pos < pos + 3000));
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => Math.abs(a.pos - pos) - Math.abs(b.pos - pos));
   return candidates[0].src;
+}
+
+function extractPublishedTime(html: string): string | null {
+  const patterns = [
+    /<time[^>]*datetime="([^"]*)"[^>]*>/i,
+    /<time[^>]*>([^<]{10,30})<\/time>/i,
+    /(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s*\d{1,2}:\d{2})/,
+    /(\d{4}[-/]\d{1,2}[-/]\d{1,2})/,
+  ];
+  for (const pattern of patterns) {
+    const m = pattern.exec(html);
+    if (m) {
+      const t = m[1] || m[0];
+      const d = new Date(t.replace(/<[^>]*>/g, "").trim());
+      if (!isNaN(d.getTime())) return d.toISOString().replace("T", " ").substring(0, 16);
+    }
+  }
+  return null;
 }
 
 function extractArticles(html: string, baseUrl: string): Array<{
@@ -86,7 +124,7 @@ function extractArticles(html: string, baseUrl: string): Array<{
 
   const targets = blocks.length > 0 ? blocks : [{ html, pos: 0 }];
 
-  for (const { html: block, pos: blockPos } of targets) {
+  for (const { html: block } of targets) {
     const linkRegex = /<a[^>]*href="([^"]*)"[^>]*>([^<]{6,100})<\/a>/gi;
     while ((m = linkRegex.exec(block)) !== null) {
       let href = m[1];
@@ -97,23 +135,21 @@ function extractArticles(html: string, baseUrl: string): Array<{
       if (!href.startsWith("http")) continue;
       seen.add(text);
 
-      // Find image - first in block
+      let imgUrl: string | null = null;
       const blockImgRegex = /<img[^>]*src="([^"]*)"[^>]*>/i;
       const blockImg = blockImgRegex.exec(block);
-      let imgUrl: string | null = null;
       if (blockImg) {
         const src = blockImg[1];
         if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg|pixel)/i.test(src)) imgUrl = src;
       }
-      // Then nearest in full HTML
       if (!imgUrl) {
         const linkPosInHtml = html.indexOf(href);
         if (linkPosInHtml > 0) imgUrl = findNearestImage(allImages, linkPosInHtml);
       }
-      // Last resort
-      if (!imgUrl && fallbackImages.length > 0) imgUrl = fallbackImages[0];
+      if (!imgUrl && fallbackImages.length > 0) {
+        for (const fi of fallbackImages) { if (!/(logo|icon|avatar)/i.test(fi)) { imgUrl = fi; break; } }
+      }
 
-      // Description
       const descRegex = /<p[^>]*>([^<]{10,200})<\/p>/gi;
       let summary: string | null = null;
       let descMatch: RegExpExecArray | null;
@@ -138,7 +174,7 @@ async function scrapeSource(url: string, name: string, maxItems = 15) {
 
 async function scrapeWeChat() {
   const results: Array<{ title: string; content: string; summary: string; source: string; imageUrl: string | null; link: string }> = [];
-  const keywords = ["手游", "游戏", "SLG", "新游", "游戏公司"];
+  const keywords = ["手游", "游戏行业", "SLG", "新游发布", "游戏公司", "游戏出海", "游戏广告", "游戏买量"];
   for (const keyword of keywords) {
     try {
       const html = await fetchPage(`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(keyword)}`);
@@ -150,10 +186,11 @@ async function scrapeWeChat() {
   return results;
 }
 
-async function fetchArticleContent(url: string): Promise<string | null> {
+async function fetchArticleContentWithTime(url: string): Promise<{ html: string | null; publishedAt: string | null }> {
   try {
     const html = await fetchPage(url);
-    if (!html) return null;
+    if (!html) return { html: null, publishedAt: null };
+    const publishedAt = extractPublishedTime(html);
     const patterns = [
       /<article[^>]*>([\s\S]*?)<\/article>/i,
       /<div[^>]*class="[^"]*(?:article|content|post|main|text|detail|rich_media_content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
@@ -163,11 +200,11 @@ async function fetchArticleContent(url: string): Promise<string | null> {
       const m = pattern.exec(html);
       if (m) {
         let content = m[1].replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<iframe[\s\S]*?<\/iframe>/gi, "").trim();
-        if (content.length > 50) return content;
+        if (content.length > 50) return { html: content, publishedAt };
       }
     }
-    return null;
-  } catch { return null; }
+    return { html: null, publishedAt };
+  } catch { return { html: null, publishedAt: null }; }
 }
 
 export async function POST() {
@@ -198,12 +235,15 @@ export async function POST() {
       return true;
     });
 
-    const topItems = unique.slice(0, 20);
-    const contentMap = new Map<string, string>();
+    // Fetch article content and published time
+    const topItems = unique.slice(0, 15);
+    const contentMap = new Map<string, string | null>();
+    const timeMap = new Map<string, string | null>();
     await Promise.allSettled(topItems.map(async (item) => {
       if (item.link) {
-        const html = await fetchArticleContent(item.link);
-        if (html) contentMap.set(item.link, html);
+        const { html, publishedAt } = await fetchArticleContentWithTime(item.link);
+        contentMap.set(item.link, html);
+        timeMap.set(item.link, publishedAt);
       }
     }));
 
@@ -211,17 +251,19 @@ export async function POST() {
     for (const entry of unique) {
       const existing = await prisma.entry.findFirst({ where: { date: today, title: entry.title } });
       if (!existing) {
+        const category = classifyArticle(entry.title, entry.content);
         await prisma.entry.create({
           data: {
             date: today,
-            category: classifyArticle(entry.title, entry.content),
+            category,
             title: entry.title,
             content: entry.content,
             summary: entry.summary,
             source: entry.source,
-            imageUrl: entry.imageUrl,
+            imageUrl: entry.imageUrl || generatePlaceholderImage(entry.title, category),
             link: entry.link,
             contentHtml: entry.link ? (contentMap.get(entry.link) || null) : null,
+            publishedAt: entry.link ? (timeMap.get(entry.link) || null) : null,
           },
         });
         saved++;

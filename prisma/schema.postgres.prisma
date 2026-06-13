@@ -9,7 +9,7 @@ datasource db {
 
 model Entry {
   id          Int      @id @default(autoincrement())
-  date        String   // YYYY-MM-DD
+  date        String   // YYYY-MM-DD (采集日期)
   category    String
   title       String
   content     String
@@ -18,9 +18,11 @@ model Entry {
   imageUrl    String?  // 缩略图
   link        String?  // 原文链接
   contentHtml String?  // 抓取的文章正文HTML
+  publishedAt String?  // 文章原始发布时间
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([date])
   @@index([category])
+  @@index([publishedAt])
 }
