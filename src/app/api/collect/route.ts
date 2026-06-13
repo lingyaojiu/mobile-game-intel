@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 const CATEGORIES: Record<string, string[]> = {
@@ -25,28 +25,45 @@ function classifyArticle(title: string, content: string): string {
     scores[category] = 0;
     for (const kw of keywords) {
       let pos = 0;
-      while ((pos = text.indexOf(kw.toLowerCase(), pos)) !== -1) {
-        scores[category]++;
-        pos += kw.length;
-      }
+      while ((pos = text.indexOf(kw.toLowerCase(), pos)) !== -1) { scores[category]++; pos += kw.length; }
     }
   }
   let best = "news", bestScore = 0;
-  for (const [cat, score] of Object.entries(scores)) {
-    if (score > bestScore) { bestScore = score; best = cat; }
-  }
+  for (const [cat, score] of Object.entries(scores)) { if (score > bestScore) { bestScore = score; best = cat; } }
   return best;
 }
 
-async function fetchPage(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    },
-  });
-  return await response.text();
+async function fetchPage(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+    if (!response.ok) return null;
+    return await response.text();
+  } catch { return null; }
+}
+
+function extractAllImages(html: string): Array<{ src: string; pos: number }> {
+  const images: Array<{ src: string; pos: number }> = [];
+  const imgRegex = /<img[^>]*src="([^"]*)"[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = imgRegex.exec(html)) !== null) {
+    const src = m[1];
+    if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg|pixel|blank|loading|default)/i.test(src)) {
+      images.push({ src, pos: m.index });
+    }
+  }
+  return images;
+}
+
+function findNearestImage(images: Array<{ src: string; pos: number }>, pos: number): string | null {
+  const candidates = images.filter(img => (img.pos > pos - 3000 && img.pos < pos + 2000));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => Math.abs(a.pos - pos) - Math.abs(b.pos - pos));
+  return candidates[0].src;
 }
 
 function extractArticles(html: string, baseUrl: string): Array<{
@@ -56,74 +73,101 @@ function extractArticles(html: string, baseUrl: string): Array<{
     title: string; content: string; summary: string; source: string; imageUrl: string | null; link: string;
   }> = [];
   const seen = new Set<string>();
+  const allImages = extractAllImages(html);
+  const fallbackImages = allImages.map(i => i.src);
 
-  const itemRegex = /<div[^>]*class="[^"]*(?:item|card|post|entry|news|list|box)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+  const itemRegex = /<div[^>]*class="[^"]*(?:item|card|post|entry|news|list|box|pic|img)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
   const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
 
-  const blocks: string[] = [];
+  const blocks: Array<{ html: string; pos: number }> = [];
   let m: RegExpExecArray | null;
-  while ((m = itemRegex.exec(html)) !== null) blocks.push(m[1]);
-  while ((m = liRegex.exec(html)) !== null) blocks.push(m[1]);
+  while ((m = itemRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
+  while ((m = liRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
 
-  const targets = blocks.length > 0 ? blocks : [html];
+  const targets = blocks.length > 0 ? blocks : [{ html, pos: 0 }];
 
-  for (const block of targets) {
+  for (const { html: block, pos: blockPos } of targets) {
     const linkRegex = /<a[^>]*href="([^"]*)"[^>]*>([^<]{6,100})<\/a>/gi;
     while ((m = linkRegex.exec(block)) !== null) {
       let href = m[1];
       const text = m[2].replace(/<[^>]*>/g, "").trim();
-
       if (text.length < 6 || text.length > 80 || seen.has(text)) continue;
       if (/登录|注册|首页|更多|javascript|undefined|null/.test(text)) continue;
       if (href.startsWith("/")) href = baseUrl + href;
       if (!href.startsWith("http")) continue;
-
       seen.add(text);
 
-      // Extract image
-      const imgRegex = /<img[^>]*src="([^"]*)"[^>]*>/gi;
+      // Find image - first in block
+      const blockImgRegex = /<img[^>]*src="([^"]*)"[^>]*>/i;
+      const blockImg = blockImgRegex.exec(block);
       let imgUrl: string | null = null;
-      let imgMatch: RegExpExecArray | null;
-      while ((imgMatch = imgRegex.exec(block)) !== null) {
-        const src = imgMatch[1];
-        if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg)/i.test(src)) {
-          imgUrl = src;
-          break;
-        }
+      if (blockImg) {
+        const src = blockImg[1];
+        if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg|pixel)/i.test(src)) imgUrl = src;
       }
+      // Then nearest in full HTML
+      if (!imgUrl) {
+        const linkPosInHtml = html.indexOf(href);
+        if (linkPosInHtml > 0) imgUrl = findNearestImage(allImages, linkPosInHtml);
+      }
+      // Last resort
+      if (!imgUrl && fallbackImages.length > 0) imgUrl = fallbackImages[0];
 
-      // Extract description
+      // Description
       const descRegex = /<p[^>]*>([^<]{10,200})<\/p>/gi;
       let summary: string | null = null;
       let descMatch: RegExpExecArray | null;
       while ((descMatch = descRegex.exec(block)) !== null) {
         const d = descMatch[1].trim();
-        if (d.length > 10 && d !== text && !d.includes("javascript")) {
-          summary = d;
-          break;
-        }
+        if (d.length > 10 && d !== text && !d.includes("javascript")) { summary = d; break; }
       }
 
-      articles.push({
-        title: text,
-        content: text,
-        summary: summary || text,
-        source: new URL(baseUrl).hostname.replace("www.", ""),
-        imageUrl: imgUrl,
-        link: href,
-      });
+      articles.push({ title: text, content: text, summary: summary || text, source: new URL(baseUrl).hostname.replace("www.", ""), imageUrl: imgUrl, link: href });
     }
   }
-
   return articles;
 }
 
 async function scrapeSource(url: string, name: string, maxItems = 15) {
   try {
     const html = await fetchPage(url);
-    const articles = extractArticles(html, url);
-    return articles.slice(0, maxItems).map((a) => ({ ...a, source: name }));
+    if (!html) return [];
+    return extractArticles(html, url).slice(0, maxItems).map((a) => ({ ...a, source: name }));
   } catch { return []; }
+}
+
+async function scrapeWeChat() {
+  const results: Array<{ title: string; content: string; summary: string; source: string; imageUrl: string | null; link: string }> = [];
+  const keywords = ["手游", "游戏", "SLG", "新游", "游戏公司"];
+  for (const keyword of keywords) {
+    try {
+      const html = await fetchPage(`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(keyword)}`);
+      if (!html) continue;
+      const articles = extractArticles(html, "https://weixin.sogou.com");
+      for (const a of articles) { a.source = "微信公众号"; results.push(a); }
+    } catch { continue; }
+  }
+  return results;
+}
+
+async function fetchArticleContent(url: string): Promise<string | null> {
+  try {
+    const html = await fetchPage(url);
+    if (!html) return null;
+    const patterns = [
+      /<article[^>]*>([\s\S]*?)<\/article>/i,
+      /<div[^>]*class="[^"]*(?:article|content|post|main|text|detail|rich_media_content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+      /<div[^>]*id="[^"]*(?:article|content|post|main|text|detail)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+    ];
+    for (const pattern of patterns) {
+      const m = pattern.exec(html);
+      if (m) {
+        let content = m[1].replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<iframe[\s\S]*?<\/iframe>/gi, "").trim();
+        if (content.length > 50) return content;
+      }
+    }
+    return null;
+  } catch { return null; }
 }
 
 export async function POST() {
@@ -133,9 +177,8 @@ export async function POST() {
     const results = await Promise.allSettled([
       scrapeSource("https://www.gamersky.com/news/", "游民星空", 12),
       scrapeSource("https://www.taptap.cn/top/new", "TapTap", 12),
-      scrapeSource("https://news.17173.com/", "17173", 10),
       scrapeSource("https://www.gamelook.com.cn/", "GameLook", 10),
-      scrapeSource("https://m.pipaw.com/xin/xinwen-2954", "琵琶网", 8),
+      scrapeWeChat(),
     ]);
 
     const allEntries: Array<{
@@ -145,7 +188,6 @@ export async function POST() {
       if (result.status === "fulfilled") allEntries.push(...result.value);
     }
 
-    // Deduplicate
     const seen = new Set<string>();
     const unique = allEntries.filter((item) => {
       const key = item.title.toLowerCase().trim();
@@ -154,11 +196,18 @@ export async function POST() {
       return true;
     });
 
+    const topItems = unique.slice(0, 20);
+    const contentMap = new Map<string, string>();
+    await Promise.allSettled(topItems.map(async (item) => {
+      if (item.link) {
+        const html = await fetchArticleContent(item.link);
+        if (html) contentMap.set(item.link, html);
+      }
+    }));
+
     let saved = 0;
     for (const entry of unique) {
-      const existing = await prisma.entry.findFirst({
-        where: { date: today, title: entry.title },
-      });
+      const existing = await prisma.entry.findFirst({ where: { date: today, title: entry.title } });
       if (!existing) {
         await prisma.entry.create({
           data: {
@@ -170,6 +219,7 @@ export async function POST() {
             source: entry.source,
             imageUrl: entry.imageUrl,
             link: entry.link,
+            contentHtml: entry.link ? (contentMap.get(entry.link) || null) : null,
           },
         });
         saved++;
@@ -184,9 +234,6 @@ export async function POST() {
     });
   } catch (error) {
     console.error("Collect error:", error);
-    return NextResponse.json(
-      { success: false, message: "采集失败: " + String(error) },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, message: "采集失败: " + String(error) }, { status: 500 });
   }
 }

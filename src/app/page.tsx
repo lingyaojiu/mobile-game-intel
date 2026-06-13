@@ -50,13 +50,9 @@ function EntryCard({ entry, onEdit, onDelete }: {
             <button onClick={() => onDelete(entry.id)} className="text-xs text-slate-500 transition-colors hover:text-red-400">删除</button>
           </div>
         </div>
-        {entry.link ? (
-          <a href={entry.link} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-slate-200 transition-colors hover:text-cyan-400">
-            {entry.title}
-          </a>
-        ) : (
-          <h3 className="text-sm font-medium text-slate-200">{entry.title}</h3>
-        )}
+        <a href={`/article/${entry.id}`} className="text-sm font-medium text-slate-200 transition-colors hover:text-cyan-400">
+          {entry.title}
+        </a>
         {entry.summary && entry.summary !== entry.title && (
           <p className="mt-1.5 text-xs leading-relaxed text-slate-400 line-clamp-2">{entry.summary}</p>
         )}

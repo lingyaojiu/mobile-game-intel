@@ -107,11 +107,7 @@ export default function DateDetailPage() {
                       <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-xs text-cyan-400">{entry.source}</span>
                     )}
                   </div>
-                  {entry.link ? (
-                    <a href={entry.link} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-slate-200 transition-colors hover:text-cyan-400">{entry.title}</a>
-                  ) : (
-                    <h3 className="text-sm font-medium text-slate-200">{entry.title}</h3>
-                  )}
+                  <a href={`/article/${entry.id}`} className="text-sm font-medium text-slate-200 transition-colors hover:text-cyan-400">{entry.title}</a>
                   {entry.summary && entry.summary !== entry.title && (
                     <p className="mt-1.5 text-xs leading-relaxed text-slate-400 line-clamp-2">{entry.summary}</p>
                   )}

@@ -1,8 +1,9 @@
 /**
- * 手游情报自动采集脚本 v2
- * 支持图片、摘要、原文链接，覆盖更多来源
- * 用法: node src/lib/collector.mjs
- * 输出: JSON [{ title, content, summary, source, imageUrl, link }]
+ * 手游情报自动采集脚本 v4
+ * - 改进图片提取：从全文范围搜索图片，按位置关联
+ * - 抓取文章正文HTML用于网页内阅读
+ * - 通过搜狗微信搜索抓取微信公众号文章
+ * - 用法: node src/lib/collector.mjs
  */
 
 const CATEGORIES = {
@@ -25,13 +26,11 @@ function classifyArticle(title, content) {
   for (const [category, keywords] of Object.entries(CATEGORIES)) {
     scores[category] = 0;
     for (const kw of keywords) {
-      let count = 0;
       let pos = 0;
       while ((pos = text.indexOf(kw.toLowerCase(), pos)) !== -1) {
-        count++;
+        scores[category]++;
         pos += kw.length;
       }
-      scores[category] += count;
     }
   }
   let best = "news", bestScore = 0;
@@ -54,57 +53,152 @@ async function fetchWithTimeout(url, timeoutMs = 10000) {
       signal: controller.signal,
     });
     clearTimeout(timeout);
+    if (!response.ok) return null;
     return await response.text();
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
+  } catch {
+    return null;
   }
 }
 
+/**
+ * Extract all images from HTML with their positions
+ */
+function extractAllImages(html) {
+  const images = [];
+  const imgRegex = /<img[^>]*src="([^"]*)"[^>]*>/gi;
+  let m;
+  while ((m = imgRegex.exec(html)) !== null) {
+    const src = m[1];
+    if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg|pixel|blank|loading|default)/i.test(src)) {
+      images.push({ src, pos: m.index });
+    }
+  }
+  return images;
+}
+
+/**
+ * Find the nearest image to a given position in the HTML
+ */
+function findNearestImage(images, pos, html, linkText) {
+  if (images.length === 0) return null;
+
+  // Look for images within 3000 chars before or 2000 chars after the link
+  const candidates = images.filter(img => 
+    (img.pos > pos - 3000 && img.pos < pos + 2000)
+  );
+
+  if (candidates.length === 0) return null;
+
+  // Return the one closest to the link position
+  candidates.sort((a, b) => Math.abs(a.pos - pos) - Math.abs(b.pos - pos));
+  return candidates[0].src;
+}
+
+/**
+ * Extract article content from link URL
+ */
+async function fetchArticleContent(url) {
+  try {
+    const html = await fetchWithTimeout(url, 8000);
+    if (!html) return null;
+
+    let content = null;
+    const patterns = [
+      /<article[^>]*>([\s\S]*?)<\/article>/i,
+      /<div[^>]*class="[^"]*(?:article|content|post|main|text|detail|rich_media_content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+      /<div[^>]*id="[^"]*(?:article|content|post|main|text|detail)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+    ];
+
+    for (const pattern of patterns) {
+      const m = pattern.exec(html);
+      if (m) { content = m[1]; break; }
+    }
+
+    if (!content) {
+      const bodyMatch = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(html);
+      if (bodyMatch) content = bodyMatch[1];
+    }
+
+    if (!content) return null;
+
+    content = content
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+      .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+      .replace(/<header[\s\S]*?<\/header>/gi, "")
+      .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+      .trim();
+
+    if (content.length < 50) return null;
+    return content;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract articles from HTML with improved image detection
+ */
 function extractArticles(html, baseUrl) {
   const articles = [];
   const seen = new Set();
 
-  // Extract article blocks
-  const articleRegex = /<article[^>]*>([\s\S]*?)<\/article>/gi;
-  const itemRegex = /<div[^>]*class="[^"]*(?:item|card|post|entry|news|list)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+  // Pre-extract all images with positions
+  const allImages = extractAllImages(html);
+
+  // Also extract images from the full HTML as fallback list
+  const fallbackImages = allImages.map(i => i.src);
+
+  const itemRegex = /<div[^>]*class="[^"]*(?:item|card|post|entry|news|list|box|pic|img)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
   const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
 
   const blocks = [];
   let m;
-  while ((m = articleRegex.exec(html)) !== null) blocks.push(m[1]);
-  while ((m = itemRegex.exec(html)) !== null) blocks.push(m[1]);
+  while ((m = itemRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
+  while ((m = liRegex.exec(html)) !== null) blocks.push({ html: m[1], pos: m.index });
 
-  // If no article blocks, use the whole HTML
-  const targets = blocks.length > 0 ? blocks : [html];
+  const targets = blocks.length > 0 ? blocks : [{ html, pos: 0 }];
 
-  for (const block of targets) {
-    // Extract link and title
+  for (const { html: block, pos: blockPos } of targets) {
     const linkRegex = /<a[^>]*href="([^"]*)"[^>]*>([^<]{6,100})<\/a>/gi;
     while ((m = linkRegex.exec(block)) !== null) {
       let href = m[1];
       const text = m[2].replace(/<[^>]*>/g, "").trim();
 
       if (text.length < 6 || text.length > 80 || seen.has(text)) continue;
-      if (text.includes("登录") || text.includes("注册") || text.includes("首页") || text.includes("更多")) continue;
+      if (/登录|注册|首页|更多|javascript|undefined|null/.test(text)) continue;
       if (href.startsWith("/")) href = baseUrl + href;
       if (!href.startsWith("http")) continue;
 
       seen.add(text);
 
-      // Extract image nearby
-      const imgRegex = /<img[^>]*src="([^"]*)"[^>]*>/gi;
+      // Try to find image in the block first
+      const blockImgRegex = /<img[^>]*src="([^"]*)"[^>]*>/i;
+      const blockImg = blockImgRegex.exec(block);
       let imgUrl = null;
-      let imgMatch;
-      while ((imgMatch = imgRegex.exec(block)) !== null) {
-        const src = imgMatch[1];
-        if (src.startsWith("http") && !src.includes("logo") && !src.includes("icon") && !src.includes("avatar")) {
+
+      if (blockImg) {
+        const src = blockImg[1];
+        if (src.startsWith("http") && !/(logo|icon|avatar|sprite|\.svg|pixel)/i.test(src)) {
           imgUrl = src;
-          break;
         }
       }
 
-      // Extract description nearby
+      // If no image in block, try nearest image in full HTML
+      if (!imgUrl) {
+        const linkPosInHtml = html.indexOf(href);
+        if (linkPosInHtml > 0) {
+          imgUrl = findNearestImage(allImages, linkPosInHtml, html, text);
+        }
+      }
+
+      // Last resort: use first valid image from fallback
+      if (!imgUrl && fallbackImages.length > 0) {
+        imgUrl = fallbackImages[0];
+      }
+
+      // Extract description
       const descRegex = /<p[^>]*>([^<]{10,200})<\/p>/gi;
       let summary = null;
       let descMatch;
@@ -130,9 +224,24 @@ function extractArticles(html, baseUrl) {
   return articles;
 }
 
+async function scrapeWeChat() {
+  const results = [];
+  const keywords = ["手游", "游戏", "SLG", "新游", "游戏公司"];
+  for (const keyword of keywords) {
+    try {
+      const html = await fetchWithTimeout(`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(keyword)}`, 8000);
+      if (!html) continue;
+      const articles = extractArticles(html, "https://weixin.sogou.com");
+      for (const article of articles) { article.source = "微信公众号"; results.push(article); }
+    } catch { continue; }
+  }
+  return results;
+}
+
 async function scrapeGamersky() {
   try {
     const html = await fetchWithTimeout("https://www.gamersky.com/news/");
+    if (!html) return [];
     return extractArticles(html, "https://www.gamersky.com");
   } catch { return []; }
 }
@@ -140,28 +249,16 @@ async function scrapeGamersky() {
 async function scrapeTapTap() {
   try {
     const html = await fetchWithTimeout("https://www.taptap.cn/top/new");
+    if (!html) return [];
     return extractArticles(html, "https://www.taptap.cn");
-  } catch { return []; }
-}
-
-async function scrape17173() {
-  try {
-    const html = await fetchWithTimeout("https://news.17173.com/");
-    return extractArticles(html, "https://news.17173.com");
   } catch { return []; }
 }
 
 async function scrapeGameLook() {
   try {
     const html = await fetchWithTimeout("https://www.gamelook.com.cn/");
+    if (!html) return [];
     return extractArticles(html, "https://www.gamelook.com.cn");
-  } catch { return []; }
-}
-
-async function scrapePipaw() {
-  try {
-    const html = await fetchWithTimeout("https://m.pipaw.com/xin/xinwen-2954");
-    return extractArticles(html, "https://m.pipaw.com");
   } catch { return []; }
 }
 
@@ -169,9 +266,8 @@ async function main() {
   const sources = await Promise.allSettled([
     scrapeGamersky(),
     scrapeTapTap(),
-    scrape17173(),
     scrapeGameLook(),
-    scrapePipaw(),
+    scrapeWeChat(),
   ]);
 
   const allResults = [];
@@ -181,7 +277,6 @@ async function main() {
     }
   }
 
-  // Deduplicate
   const seen = new Set();
   const unique = allResults.filter((item) => {
     const key = item.title.toLowerCase().trim();
@@ -190,7 +285,15 @@ async function main() {
     return true;
   });
 
-  // Add category
+  // Fetch article content for top items
+  const topItems = unique.slice(0, 20);
+  await Promise.allSettled(topItems.map(async (item) => {
+    if (item.link) {
+      const html = await fetchArticleContent(item.link);
+      if (html) item.contentHtml = html;
+    }
+  }));
+
   const output = unique.map((item) => ({
     ...item,
     category: classifyArticle(item.title, item.content),
